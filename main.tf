@@ -91,7 +91,7 @@ resource "aws_iam_instance_profile" "ec2_instance_profile" {
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "20.36.0"
+  version = "17.24.0"
 
   cluster_name    = "secure-cluster"
   cluster_version = var.eks_version
