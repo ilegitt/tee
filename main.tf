@@ -5,7 +5,6 @@ terraform {
       version = "~> 5.0"
     }
   }
-  required_version = ">= 1.5"
 }
 
 provider "aws" {
@@ -116,8 +115,19 @@ module "eks" {
     }
   }
 
-  # IAM roles mapping to allow bastion EC2 access via aws-auth ConfigMap
-  map_roles = [
+  tags = {
+    Environment = "production"
+    Name        = "secure-cluster"
+  }
+}
+
+module "eks_aws_auth" {
+  source  = "terraform-aws-modules/eks/aws//modules/aws-auth"
+  version = "20.36.0"
+
+  depends_on = [module.eks]
+
+  role_mappings = [
     {
       rolearn  = aws_iam_role.ec2_eks_access_role.arn
       username = "ec2-bastion"
@@ -125,15 +135,14 @@ module "eks" {
     }
   ]
 
-  tags = {
-    Environment = "production"
-    Name        = "secure-cluster"
-  }
+  aws_auth_roles    = []
+  aws_auth_users    = []
+  aws_auth_accounts = []
 }
 
 resource "aws_security_group" "bastion_sg" {
   name        = "bastion-sg"
-  description = "Allow SSH access to bastion"
+  description = "Allow SSH and EKS API access from bastion"
   vpc_id      = module.vpc.vpc_id
 
   ingress {
@@ -189,32 +198,32 @@ resource "aws_instance" "bastion" {
     CERT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query "cluster.certificateAuthority.data" --output text)
 
     cat <<CONFIG > /home/ec2-user/.kube/config
-apiVersion: v1
-clusters:
-- cluster:
-    server: $ENDPOINT
-    certificate-authority-data: $CERT
-  name: eks
-contexts:
-- context:
-    cluster: eks
-    user: aws
-  name: eks
-current-context: eks
-kind: Config
-preferences: {}
-users:
-- name: aws
-  user:
-    exec:
-      apiVersion: client.authentication.k8s.io/v1alpha1
-      command: aws
-      args:
-        - "eks"
-        - "get-token"
-        - "--cluster-name"
-        - "$CLUSTER_NAME"
-CONFIG
+    apiVersion: v1
+    clusters:
+    - cluster:
+        server: $ENDPOINT
+        certificate-authority-data: $CERT
+      name: eks
+    contexts:
+    - context:
+        cluster: eks
+        user: aws
+      name: eks
+    current-context: eks
+    kind: Config
+    preferences: {}
+    users:
+    - name: aws
+      user:
+        exec:
+          apiVersion: client.authentication.k8s.io/v1alpha1
+          command: aws
+          args:
+            - "eks"
+            - "get-token"
+            - "--cluster-name"
+            - "$CLUSTER_NAME"
+    CONFIG
 
     chown ec2-user:ec2-user /home/ec2-user/.kube/config
   EOF
@@ -229,7 +238,7 @@ output "ec2_eks_access_role_arn" {
 }
 
 output "cluster_name" {
-  value = module.eks.cluster_name
+  value = module.eks.cluster_id
 }
 
 output "kubeconfig_certificate_authority_data" {
@@ -242,6 +251,10 @@ output "cluster_endpoint" {
 
 output "bastion_private_ip" {
   value = aws_instance.bastion.private_ip
+}
+
+output "bastion_ssh_command" {
+  value = "ssh -i keypair.pem ec2-user@${aws_instance.bastion.private_ip}"
 }
 
 output "bastion_public_ip" {
