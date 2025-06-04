@@ -91,7 +91,7 @@ resource "aws_iam_instance_profile" "ec2_instance_profile" {
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "19.0.0"
+  version = "18.31.2"
 
   cluster_name    = "secure-cluster"
   cluster_version = var.eks_version
@@ -131,7 +131,7 @@ module "eks" {
 
 module "eks_aws_auth" {
   source = "terraform-aws-modules/eks/aws//modules/aws-auth"
-  version = "19.0.0"
+  version = "18.31.2"
 
   cluster_name = module.eks.cluster_name
   role_mappings = [
