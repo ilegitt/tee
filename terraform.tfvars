@@ -1,0 +1,5 @@
+aws_region    = "us-east-1"
+ssh_key_name  = "keypair"
+my_ip_cidr    = "83.20.251.151/32"
+ec2_ami_id    = "ami-0554aa6767e249943"
+eks_version   = "1.29"
