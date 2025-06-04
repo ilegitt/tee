@@ -129,6 +129,20 @@ module "eks" {
   }
 }
 
+module "eks_aws_auth" {
+  source = "terraform-aws-modules/eks/aws//modules/aws-auth"
+  version = "19.0.0"
+
+  cluster_name = module.eks.cluster_name
+  role_mappings = [
+    {
+      rolearn  = "arn:aws:iam::180294207856:role/ec2-eks-access-role"
+      username = "ec2-bastion"
+      groups   = ["system:masters"]
+    }
+  ]
+}
+
 resource "aws_security_group" "bastion_sg" {
   name        = "bastion-sg"
   description = "Allow SSH and EKS API access from bastion"
