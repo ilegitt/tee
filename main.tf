@@ -43,7 +43,7 @@ module "vpc" {
 # IAM Role for EC2 Bastion (to talk to EKS)
 ###############
 resource "aws_iam_role" "ec2_eks_access_role" {
-  name = "ec2-eks-access-role"
+  name = "ec2-eks-access-roles"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -78,7 +78,7 @@ resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
 }
 
 resource "aws_iam_policy" "eks_describe_cluster_policy" {
-  name        = "eks-describe-cluster-policy"
+  name        = "eks-describe-cluster-policys"
   description = "Allow EKS DescribeCluster action"
   policy      = jsonencode({
     Version = "2012-10-17",
@@ -108,7 +108,7 @@ module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.36.0"
 
-  cluster_name    = "secure-cluster"
+  cluster_name    = "secure-clusters"
   cluster_version = var.eks_version
 
   cluster_endpoint_private_access = true
@@ -133,7 +133,7 @@ module "eks" {
 
   tags = {
     Environment = "production"
-    Name        = "secure-cluster"
+    Name        = "secure-clusters"
   }
 }
 
