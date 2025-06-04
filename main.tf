@@ -130,10 +130,11 @@ module "eks" {
 }
 
 module "eks_aws_auth" {
-  source = "terraform-aws-modules/eks/aws//modules/aws-auth"
-  version = "18.31.2"
+  source  = "terraform-aws-modules/eks/aws//modules/aws-auth"
+  version = "19.0.0"
 
   cluster_name = module.eks.cluster_name
+
   role_mappings = [
     {
       rolearn  = "arn:aws:iam::180294207856:role/ec2-eks-access-role"
