@@ -115,19 +115,7 @@ module "eks" {
     }
   }
 
-  tags = {
-    Environment = "production"
-    Name        = "secure-cluster"
-  }
-}
-
-module "eks_aws_auth" {
-  source  = "terraform-aws-modules/eks/aws//modules/aws-auth"
-  version = "20.36.0"
-
-  depends_on = [module.eks]
-
-  role_mappings = [
+  map_roles = [
     {
       rolearn  = aws_iam_role.ec2_eks_access_role.arn
       username = "ec2-bastion"
@@ -135,9 +123,10 @@ module "eks_aws_auth" {
     }
   ]
 
-  aws_auth_roles    = []
-  aws_auth_users    = []
-  aws_auth_accounts = []
+  tags = {
+    Environment = "production"
+    Name        = "secure-cluster"
+  }
 }
 
 resource "aws_security_group" "bastion_sg" {
