@@ -5,12 +5,16 @@ terraform {
       version = "~> 5.0"
     }
   }
+  required_version = ">= 1.2.0"
 }
 
 provider "aws" {
   region = var.aws_region
 }
 
+#
+# VPC
+#
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "4.0.0"
@@ -30,6 +34,9 @@ module "vpc" {
   }
 }
 
+#
+# IAM Role for EC2 Bastion (to access EKS)
+#
 resource "aws_iam_role" "ec2_eks_access_role" {
   name = "ec2-eks-access-role"
 
@@ -89,9 +96,12 @@ resource "aws_iam_instance_profile" "ec2_instance_profile" {
   role = aws_iam_role.ec2_eks_access_role.name
 }
 
+#
+# EKS Cluster (module 18.x supports `map_roles`)
+#
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "20.0.0"
+  version = "18.31.2"
 
   cluster_name    = "secure-cluster"
   cluster_version = var.eks_version
@@ -104,6 +114,7 @@ module "eks" {
 
   enable_irsa = true
 
+  # Managed Node Group (still compatible with v18.x syntax)
   eks_managed_node_groups = {
     default = {
       desired_size   = 1
@@ -111,9 +122,11 @@ module "eks" {
       min_size       = 1
       instance_types = ["t3.medium"]
       subnet_ids     = module.vpc.private_subnets
-      version        = var.eks_version
     }
   }
+
+  # Map the EC2 bastion role to system:masters
+  manage_aws_auth_configmap = true
 
   map_roles = [
     {
@@ -129,24 +142,12 @@ module "eks" {
   }
 }
 
-module "eks_aws_auth" {
-  source  = "terraform-aws-modules/eks/aws//modules/aws-auth"
-  version = "20.0.0"
-
-  cluster_name = module.eks.cluster_name
-
-  role_mappings = [
-    {
-      rolearn  = "arn:aws:iam::180294207856:role/ec2-eks-access-role"
-      username = "ec2-bastion"
-      groups   = ["system:masters"]
-    }
-  ]
-}
-
+#
+# Security Group for Bastion
+#
 resource "aws_security_group" "bastion_sg" {
   name        = "bastion-sg"
-  description = "Allow SSH and EKS API access from bastion"
+  description = "Allow SSH access from my IP"
   vpc_id      = module.vpc.vpc_id
 
   ingress {
@@ -168,6 +169,9 @@ resource "aws_security_group" "bastion_sg" {
   }
 }
 
+#
+# EC2 Bastion Host (with IAM instance profile)
+#
 resource "aws_instance" "bastion" {
   ami                         = var.ec2_ami_id
   instance_type               = "t3.micro"
@@ -185,49 +189,54 @@ resource "aws_instance" "bastion" {
     yum update -y
     yum install -y curl unzip bash-completion jq
 
+    # Install AWS CLI v2
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
     unzip awscliv2.zip
     sudo ./aws/install
 
-    curl -o kubectl https://s3.${var.aws_region}.amazonaws.com/amazon-eks/${var.eks_version}/bin/linux/amd64/kubectl
-    chmod +x ./kubectl
-    sudo mv ./kubectl /usr/local/bin/
+    # Install kubectl matching cluster version
+    curl -LO "https://dl.k8s.io/release/v${var.eks_version}/bin/linux/amd64/kubectl"
+    chmod +x kubectl
+    sudo mv kubectl /usr/local/bin/
 
+    # Set up kubeconfig for the bastion
     mkdir -p /home/ec2-user/.kube
     chown ec2-user:ec2-user /home/ec2-user/.kube
 
     CLUSTER_NAME="secure-cluster"
     REGION="${var.aws_region}"
-    ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query "cluster.endpoint" --output text)
-    CERT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query "cluster.certificateAuthority.data" --output text)
+    ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
+               --query "cluster.endpoint" --output text)
+    CERT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
+             --query "cluster.certificateAuthority.data" --output text)
 
     cat <<CONFIG > /home/ec2-user/.kube/config
-    apiVersion: v1
-    clusters:
-    - cluster:
-        server: $ENDPOINT
-        certificate-authority-data: $CERT
-      name: eks
-    contexts:
-    - context:
-        cluster: eks
-        user: aws
-      name: eks
-    current-context: eks
-    kind: Config
-    preferences: {}
-    users:
-    - name: aws
-      user:
-        exec:
-          apiVersion: client.authentication.k8s.io/v1alpha1
-          command: aws
-          args:
-            - "eks"
-            - "get-token"
-            - "--cluster-name"
-            - "$CLUSTER_NAME"
-    CONFIG
+apiVersion: v1
+clusters:
+- cluster:
+    server: $ENDPOINT
+    certificate-authority-data: $CERT
+  name: eks
+contexts:
+- context:
+    cluster: eks
+    user: aws
+  name: eks
+current-context: eks
+kind: Config
+preferences: {}
+users:
+- name: aws
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1alpha1
+      command: aws
+      args:
+        - "eks"
+        - "get-token"
+        - "--cluster-name"
+        - "$CLUSTER_NAME"
+CONFIG
 
     chown ec2-user:ec2-user /home/ec2-user/.kube/config
   EOF
@@ -237,6 +246,9 @@ resource "aws_instance" "bastion" {
   }
 }
 
+#
+# Outputs
+#
 output "ec2_eks_access_role_arn" {
   value = aws_iam_role.ec2_eks_access_role.arn
 }
