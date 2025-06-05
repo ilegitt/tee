@@ -240,7 +240,7 @@ resource "aws_security_group" "bastion_sg" {
 resource "aws_instance" "bastion" {
   ami                         = var.ec2_ami_id
   instance_type               = "t3.micro"
-  subnet_id                   = module.vpc.public_subnets[0]
+  subnet_id                   = module.vpc.private_subnets[0]
   associate_public_ip_address = true
   key_name                    = var.ssh_key_name
 
