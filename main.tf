@@ -192,7 +192,7 @@ resource "aws_eks_node_group" "worker_nodes" {
 
   instance_types = ["t3.medium"]
   version        = var.eks_version
-  ami_type       = "AL2023_x86_64"
+  ami_type       = "AL2023_x86_64_STANDARD"
 
   depends_on = [
     kubernetes_config_map_v1.aws_auth
