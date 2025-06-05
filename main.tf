@@ -52,7 +52,7 @@ module "vpc" {
 ############################
 # -- Bastion host role (minimal EKS DescribeCluster) --
 resource "aws_iam_role" "bastion_access_role" {
-  name = "bastion-access-role-v7"
+  name = "bastion-access-role-v8"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -66,7 +66,7 @@ resource "aws_iam_role" "bastion_access_role" {
 
 # Grant only DescribeCluster so the bastion can fetch the cluster endpoint/cert
 resource "aws_iam_policy" "eks_describe_cluster_policy" {
-  name        = "eks-describe-cluster-policy-v7"
+  name        = "eks-describe-cluster-policy-v8"
   description = "Allow DescribeCluster for generating kubeconfig"
   policy      = jsonencode({
     Version = "2012-10-17",
@@ -79,19 +79,19 @@ resource "aws_iam_policy" "eks_describe_cluster_policy" {
 }
 
 resource "aws_iam_policy_attachment" "bastion_describe_cluster" {
-  name       = "attach-bastion-describe-cluster-policy-v7"
+  name       = "attach-bastion-describe-cluster-policy-v8"
   policy_arn = aws_iam_policy.eks_describe_cluster_policy.arn
   roles      = [aws_iam_role.bastion_access_role.name]
 }
 
 resource "aws_iam_instance_profile" "bastion_instance_profile" {
-  name = "bastion-instance-profile-v7"
+  name = "bastion-instance-profile-v8"
   role = aws_iam_role.bastion_access_role.name
 }
 
 # -- Worker‑node role (full EKS worker policies) --
 resource "aws_iam_role" "eks_worker_role" {
-  name = "eks-worker-node-role-v7"
+  name = "eks-worker-node-role-v8"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -121,7 +121,7 @@ module "eks_control_plane" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.36.0"
 
-  cluster_name    = "secure-cluster-v7"
+  cluster_name    = "secure-cluster-v8"
   cluster_version = var.eks_version
 
   cluster_endpoint_private_access = true
@@ -134,7 +134,7 @@ module "eks_control_plane" {
 
   tags = {
     Environment = "production"
-    Name        = "secure-cluster-v7"
+    Name        = "secure-cluster-v8"
   }
 }
 
@@ -215,12 +215,12 @@ resource "aws_eks_node_group" "worker_nodes" {
 # 8) Bastion Security Group (rules separated)
 ############################
 resource "aws_security_group" "bastion_sg" {
-  name        = "bastion-sg-v7"
+  name        = "bastion-sg-v8"
   description = "Security group for bastion host"
   vpc_id      = module.vpc.vpc_id
 
   tags = {
-    Name = "bastion-sg-v7"
+    Name = "bastion-sg-v8"
   }
 }
 
@@ -276,7 +276,7 @@ resource "aws_instance" "bastion" {
     mkdir -p /home/ec2-user/.kube
     chown ec2-user:ec2-user /home/ec2-user/.kube
 
-    CLUSTER_NAME="secure-cluster-v7"
+    CLUSTER_NAME="secure-cluster-v8"
     REGION="${var.aws_region}"
     ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query "cluster.endpoint" --output text)
     CERT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query "cluster.certificateAuthority.data" --output text)
@@ -313,7 +313,7 @@ CONFIG
   EOF
 
   tags = {
-    Name = "eks-bastion-v7"
+    Name = "eks-bastion-v8"
   }
 }
 
@@ -323,7 +323,7 @@ resource "aws_eip" "bastion_eip" {
   vpc      = true
   depends_on = [aws_instance.bastion]
   tags = {
-    Name = "bastion-eip-v7"
+    Name = "bastion-eip-v8"
   }
 }
 
