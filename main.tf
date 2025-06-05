@@ -125,7 +125,8 @@ module "eks_control_plane" {
   cluster_version = var.eks_version
 
   cluster_endpoint_private_access = true
-  cluster_endpoint_public_access  = false
+  cluster_endpoint_public_access  = var.allow_public_cluster_access
+  public_access_cidrs            = true
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
