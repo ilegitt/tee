@@ -16,12 +16,12 @@ provider "aws" {
   region = var.aws_region
 }
 
-###############
-# VPC
-###############
+#
+# 1) Create a VPC to host everything
+#
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "5.1.2"  # latest at time of writing
+  version = "5.1.2"
 
   name = "eks-vpc"
   cidr = "10.0.0.0/16"
@@ -39,19 +39,17 @@ module "vpc" {
   }
 }
 
-###############
-# IAM Role for EC2 Bastion (to talk to EKS)
-###############
+#
+# 2) IAM Role for EC2 bastion (to patch aws-auth) and later for worker nodes
+#
 resource "aws_iam_role" "ec2_eks_access_role" {
-  name = "ec2-eks-access-roles"
+  name = "ec2-eks-access-role-v2"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
       Effect = "Allow",
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      },
+      Principal = { Service = "ec2.amazonaws.com" },
       Action = "sts:AssumeRole"
     }]
   })
@@ -78,7 +76,7 @@ resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
 }
 
 resource "aws_iam_policy" "eks_describe_cluster_policy" {
-  name        = "eks-describe-cluster-policys"
+  name        = "eks-describe-cluster-policy-v2"
   description = "Allow EKS DescribeCluster action"
   policy      = jsonencode({
     Version = "2012-10-17",
@@ -91,26 +89,27 @@ resource "aws_iam_policy" "eks_describe_cluster_policy" {
 }
 
 resource "aws_iam_policy_attachment" "attach_describe_cluster_policy" {
-  name       = "attach-describe-cluster-policy"
+  name       = "attach-describe-cluster-policy-v2"
   policy_arn = aws_iam_policy.eks_describe_cluster_policy.arn
   roles      = [aws_iam_role.ec2_eks_access_role.name]
 }
 
 resource "aws_iam_instance_profile" "ec2_instance_profile" {
-  name = "ec2-eks-access-instance-profile"
+  name = "ec2-eks-access-instance-profile-v2"
   role = aws_iam_role.ec2_eks_access_role.name
 }
 
-###############
-# EKS Cluster + Node Group
-###############
-module "eks" {
+#
+# 3) Create **only** the EKS control plane (no node groups).
+#
+module "eks_control_plane" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.36.0"
 
-  cluster_name    = "secure-clusters"
+  cluster_name    = "secure-cluster-v2"
   cluster_version = var.eks_version
 
+  # Private-only endpoint:
   cluster_endpoint_private_access = true
   cluster_endpoint_public_access  = false
 
@@ -119,50 +118,37 @@ module "eks" {
 
   enable_irsa = true
 
-  # One managed node group
-  eks_managed_node_groups = {
-    default = {
-      desired_size   = 2
-      max_size       = 3
-      min_size       = 1
-      instance_types = ["t3.medium"]
-      subnet_ids     = module.vpc.private_subnets
-      version        = var.eks_version
-    }
-  }
+  # *** DO NOT specify eks_managed_node_groups here ***
+  # We will add node groups in step 5, after fixing aws-auth.
 
   tags = {
     Environment = "production"
-    Name        = "secure-clusters"
+    Name        = "secure-cluster-v2"
   }
 }
 
 #
-# Data Source to fetch cluster info
-# (so we can configure the Kubernetes provider below)
+# 4) Data sources so that we can connect the kubernetes provider to EKS
 #
 data "aws_eks_cluster" "cluster" {
-  name = module.eks.cluster_id
+  name = module.eks_control_plane.cluster_id
 }
 
 data "aws_eks_cluster_auth" "cluster" {
-  name = module.eks.cluster_id
+  name = module.eks_control_plane.cluster_id
 }
 
-###############
-# Kubernetes Provider (point to the newly created cluster)
-###############
+#
+# 5) Kubernetes provider (point at the just-created control plane)
+#
 provider "kubernetes" {
   host                   = data.aws_eks_cluster.cluster.endpoint
   cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
   token                  = data.aws_eks_cluster_auth.cluster.token
 }
 
-###############
-# Patch aws-auth ConfigMap
-###############
-# This maps your EC2 IAM role (attached to the bastion)
-# into the cluster’s aws-auth ConfigMap with system:masters privileges.
+#
+# 6) Patch aws-auth ConfigMap so that ec2_eks_access_role can join as node/admin
 #
 resource "kubernetes_config_map_v1" "aws_auth" {
   metadata {
@@ -171,7 +157,13 @@ resource "kubernetes_config_map_v1" "aws_auth" {
   }
 
   data = {
+    # We only need mapRoles here: Worker nodes and bastion share the same IAM role
     mapRoles = yamlencode([
+      {
+        rolearn  = aws_iam_role.ec2_eks_access_role.arn
+        username = "system:node:{{EC2PrivateDNSName}}"
+        groups   = ["system:bootstrappers", "system:nodes"]
+      },
       {
         rolearn  = aws_iam_role.ec2_eks_access_role.arn
         username = "ec2-bastion"
@@ -180,17 +172,41 @@ resource "kubernetes_config_map_v1" "aws_auth" {
     ])
   }
 
-  # Make sure the cluster and nodegroups exist first
   depends_on = [
-    module.eks
+    module.eks_control_plane
   ]
 }
 
-###############
-# Security Group for Bastion
-###############
+#
+# 7) Now that the aws-auth ConfigMap is in place, create the managed node group
+#    We explicitly depend on the aws-auth patch so that the worker nodes never attempt to join too early.
+#
+resource "aws_eks_node_group" "worker_nodes" {
+  cluster_name    = module.eks_control_plane.cluster_id
+  node_group_name = "default"
+  node_role_arn   = aws_iam_role.ec2_eks_access_role.arn
+  subnet_ids      = module.vpc.private_subnets
+
+  scaling_config {
+    desired_size = 2
+    max_size     = 3
+    min_size     = 1
+  }
+
+  instance_types = ["t3.medium"]
+  version        = var.eks_version
+  ami_type       = "AL2023_x86_64"
+
+  depends_on = [
+    kubernetes_config_map_v1.aws_auth
+  ]
+}
+
+#
+# 8) Security Group for Bastion
+#
 resource "aws_security_group" "bastion_sg" {
-  name        = "bastion-sg"
+  name        = "bastion-sg-v2"
   description = "Allow SSH from my IP"
   vpc_id      = module.vpc.vpc_id
 
@@ -209,13 +225,13 @@ resource "aws_security_group" "bastion_sg" {
   }
 
   tags = {
-    Name = "bastion-sg"
+    Name = "bastion-sg-v2"
   }
 }
 
-###############
-# EC2 Bastion Host
-###############
+#
+# 9) EC2 Bastion Host
+#
 resource "aws_instance" "bastion" {
   ami                         = var.ec2_ami_id
   instance_type               = "t3.micro"
@@ -247,7 +263,7 @@ resource "aws_instance" "bastion" {
     mkdir -p /home/ec2-user/.kube
     chown ec2-user:ec2-user /home/ec2-user/.kube
 
-    CLUSTER_NAME="secure-cluster"
+    CLUSTER_NAME="secure-cluster-v2"
     REGION="${var.aws_region}"
     ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
                --query "cluster.endpoint" --output text)
@@ -286,19 +302,19 @@ CONFIG
   EOF
 
   tags = {
-    Name = "eks-bastion"
+    Name = "eks-bastion-v2"
   }
 }
 
-###############
+############################
 # Outputs
-###############
+############################
 output "ec2_eks_access_role_arn" {
   value = aws_iam_role.ec2_eks_access_role.arn
 }
 
 output "cluster_name" {
-  value = module.eks.cluster_id
+  value = module.eks_control_plane.cluster_id
 }
 
 output "kubeconfig_certificate_authority_data" {
@@ -311,10 +327,6 @@ output "cluster_endpoint" {
 
 output "bastion_private_ip" {
   value = aws_instance.bastion.private_ip
-}
-
-output "bastion_ssh_command" {
-  value = "ssh -i keypair.pem ec2-user@${aws_instance.bastion.private_ip}"
 }
 
 output "bastion_public_ip" {
