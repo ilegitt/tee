@@ -1,3 +1,6 @@
+############################
+# Terraform & Providers
+############################
 terraform {
   required_providers {
     aws = {
@@ -19,6 +22,11 @@ provider "aws" {
 ############################
 # 1) VPC
 ############################
+# Discover the first three AZs in the chosen region so that the
+# configuration adapts automatically across regions without hard‑coding.
+
+data "aws_availability_zones" "available" {}
+
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "5.1.2"
@@ -26,7 +34,7 @@ module "vpc" {
   name = "eks-vpc"
   cidr = "10.0.0.0/16"
 
-  azs             = ["${var.aws_region}a", "${var.aws_region}b", "${var.aws_region}c"]
+  azs             = slice(data.aws_availability_zones.available.names, 0, 3)
   public_subnets  = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
   private_subnets = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 
@@ -40,10 +48,11 @@ module "vpc" {
 }
 
 ############################
-# 2) IAM Role & Policies for EC2 Bastion / Worker Nodes
+# 2) IAM Roles & Policies
 ############################
-resource "aws_iam_role" "ec2_eks_access_role" {
-  name = "ec2-eks-access-role-v4"
+# -- Bastion host role (minimal EKS DescribeCluster) --
+resource "aws_iam_role" "bastion_access_role" {
+  name = "bastion-access-role-v5"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -55,29 +64,10 @@ resource "aws_iam_role" "ec2_eks_access_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  role       = aws_iam_role.ec2_eks_access_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "ecr_readonly" {
-  role       = aws_iam_role.ec2_eks_access_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-resource "aws_iam_role_policy_attachment" "cloudwatch_logs" {
-  role       = aws_iam_role.ec2_eks_access_role.name
-  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
-}
-
-resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
-  role       = aws_iam_role.ec2_eks_access_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-}
-
+# Grant only DescribeCluster so the bastion can fetch the cluster endpoint/cert
 resource "aws_iam_policy" "eks_describe_cluster_policy" {
-  name        = "eks-describe-cluster-policy-v4"
-  description = "Allow EKS DescribeCluster action"
+  name        = "eks-describe-cluster-policy-v5"
+  description = "Allow DescribeCluster for generating kubeconfig"
   policy      = jsonencode({
     Version = "2012-10-17",
     Statement = [{
@@ -88,25 +78,50 @@ resource "aws_iam_policy" "eks_describe_cluster_policy" {
   })
 }
 
-resource "aws_iam_policy_attachment" "attach_describe_cluster_policy" {
-  name       = "attach-describe-cluster-policy-v4"
+resource "aws_iam_policy_attachment" "bastion_describe_cluster" {
+  name       = "attach-bastion-describe-cluster-policy-v5"
   policy_arn = aws_iam_policy.eks_describe_cluster_policy.arn
-  roles      = [aws_iam_role.ec2_eks_access_role.name]
+  roles      = [aws_iam_role.bastion_access_role.name]
 }
 
-resource "aws_iam_instance_profile" "ec2_instance_profile" {
-  name = "ec2-eks-access-instance-profile-v4"
-  role = aws_iam_role.ec2_eks_access_role.name
+resource "aws_iam_instance_profile" "bastion_instance_profile" {
+  name = "bastion-instance-profile-v5"
+  role = aws_iam_role.bastion_access_role.name
+}
+
+# -- Worker‑node role (full EKS worker policies) --
+resource "aws_iam_role" "eks_worker_role" {
+  name = "eks-worker-node-role-v5"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect = "Allow",
+      Principal = { Service = "ec2.amazonaws.com" },
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "worker_node_policies" {
+  for_each = {
+    eks_worker        = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+    ecr_readonly      = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+    cni               = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+    cloudwatch_logs   = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+  }
+  role       = aws_iam_role.eks_worker_role.name
+  policy_arn = each.value
 }
 
 ############################
-# 3) EKS Control Plane Only
+# 3) EKS Control Plane (no node groups yet)
 ############################
 module "eks_control_plane" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.36.0"
 
-  cluster_name    = "secure-cluster-v4"
+  cluster_name    = "secure-cluster-v5"
   cluster_version = var.eks_version
 
   cluster_endpoint_private_access = true
@@ -117,10 +132,9 @@ module "eks_control_plane" {
 
   enable_irsa = true
 
-  # Do NOT specify node groups here (we'll create them later)
   tags = {
     Environment = "production"
-    Name        = "secure-cluster-v4"
+    Name        = "secure-cluster-v5"
   }
 }
 
@@ -128,23 +142,17 @@ module "eks_control_plane" {
 # 4) Data Sources for Kubernetes Provider
 ############################
 data "aws_eks_cluster" "cluster" {
-  name = module.eks_control_plane.cluster_name
-
-  depends_on = [
-    module.eks_control_plane
-  ]
+  name       = module.eks_control_plane.cluster_name
+  depends_on = [module.eks_control_plane]
 }
 
 data "aws_eks_cluster_auth" "cluster" {
-  name = module.eks_control_plane.cluster_name
-
-  depends_on = [
-    module.eks_control_plane
-  ]
+  name       = module.eks_control_plane.cluster_name
+  depends_on = [module.eks_control_plane]
 }
 
 ############################
-# 5) Kubernetes Provider Configuration
+# 5) Kubernetes Provider (auth via token)
 ############################
 provider "kubernetes" {
   host                   = data.aws_eks_cluster.cluster.endpoint
@@ -153,7 +161,7 @@ provider "kubernetes" {
 }
 
 ############################
-# 6) Patch aws-auth ConfigMap
+# 6) Patch aws‑auth ConfigMap
 ############################
 resource "kubernetes_config_map_v1" "aws_auth" {
   metadata {
@@ -163,33 +171,31 @@ resource "kubernetes_config_map_v1" "aws_auth" {
 
   data = {
     mapRoles = yamlencode([
-      # Worker node role mapping:
+      # Worker nodes
       {
-        rolearn  = aws_iam_role.ec2_eks_access_role.arn
+        rolearn  = aws_iam_role.eks_worker_role.arn
         username = "system:node:{{EC2PrivateDNSName}}"
         groups   = ["system:bootstrappers", "system:nodes"]
       },
-      # Bastion EC2 administrative mapping:
+      # Bastion host (cluster‑admin; reduce later if needed)
       {
-        rolearn  = aws_iam_role.ec2_eks_access_role.arn
-        username = "ec2-bastion"
+        rolearn  = aws_iam_role.bastion_access_role.arn
+        username = "bastion-admin"
         groups   = ["system:masters"]
       }
     ])
   }
 
-  depends_on = [
-    module.eks_control_plane
-  ]
+  depends_on = [module.eks_control_plane]
 }
 
 ############################
-# 7) Create EKS Managed Node Group (depends on aws-auth patch)
+# 7) EKS Managed Node Group
 ############################
 resource "aws_eks_node_group" "worker_nodes" {
   cluster_name    = module.eks_control_plane.cluster_name
   node_group_name = "default"
-  node_role_arn   = aws_iam_role.ec2_eks_access_role.arn
+  node_role_arn   = aws_iam_role.eks_worker_role.arn
   subnet_ids      = module.vpc.private_subnets
 
   scaling_config {
@@ -202,50 +208,52 @@ resource "aws_eks_node_group" "worker_nodes" {
   version        = var.eks_version
   ami_type       = "AL2023_x86_64_STANDARD"
 
-  depends_on = [
-    kubernetes_config_map_v1.aws_auth
-  ]
+  depends_on = [kubernetes_config_map_v1.aws_auth]
 }
 
 ############################
-# 8) Security Group for Bastion
+# 8) Bastion Security Group (rules separated)
 ############################
 resource "aws_security_group" "bastion_sg" {
-  name        = "bastion-sg-v4"
-  description = "Allow SSH from my IP"
+  name        = "bastion-sg-v5"
+  description = "Security group for bastion host"
   vpc_id      = module.vpc.vpc_id
 
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.my_ip_cidr]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   tags = {
-    Name = "bastion-sg-v4"
+    Name = "bastion-sg-v5"
   }
 }
 
+resource "aws_security_group_rule" "bastion_ssh_ingress" {
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  cidr_blocks       = [var.my_ip_cidr]
+  security_group_id = aws_security_group.bastion_sg.id
+}
+
+resource "aws_security_group_rule" "bastion_all_egress" {
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.bastion_sg.id
+}
+
 ############################
-# 9) EC2 Bastion Host
+# 9) EC2 Bastion Host (in public subnet with Elastic IP)
 ############################
 resource "aws_instance" "bastion" {
   ami                         = var.ec2_ami_id
   instance_type               = "t3.micro"
-  subnet_id                   = module.vpc.private_subnets[0]
+  subnet_id                   = module.vpc.public_subnets[0]
   associate_public_ip_address = true
   key_name                    = var.ssh_key_name
 
   vpc_security_group_ids = [aws_security_group.bastion_sg.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_instance_profile.name
+  iam_instance_profile   = aws_iam_instance_profile.bastion_instance_profile.name
 
   user_data = <<-EOF
     #!/bin/bash
@@ -257,23 +265,21 @@ resource "aws_instance" "bastion" {
     # Install AWS CLI v2
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
     unzip awscliv2.zip
-    sudo ./aws/install
+    ./aws/install
 
     # Install kubectl matching cluster version
     curl -LO "https://dl.k8s.io/release/v${var.eks_version}/bin/linux/amd64/kubectl"
     chmod +x kubectl
-    sudo mv kubectl /usr/local/bin/
+    mv kubectl /usr/local/bin/
 
-    # Set up kubeconfig for the bastion
+    # Generate kubeconfig
     mkdir -p /home/ec2-user/.kube
     chown ec2-user:ec2-user /home/ec2-user/.kube
 
-    CLUSTER_NAME="secure-cluster-v4"
+    CLUSTER_NAME="secure-cluster-v5"
     REGION="${var.aws_region}"
-    ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
-               --query "cluster.endpoint" --output text)
-    CERT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
-             --query "cluster.certificateAuthority.data" --output text)
+    ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query "cluster.endpoint" --output text)
+    CERT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query "cluster.certificateAuthority.data" --output text)
 
     cat <<CONFIG > /home/ec2-user/.kube/config
 apiVersion: v1
@@ -307,18 +313,29 @@ CONFIG
   EOF
 
   tags = {
-    Name = "eks-bastion-v4"
+    Name = "eks-bastion-v5"
+  }
+}
+
+# Allocate stable Elastic IP for the bastion
+resource "aws_eip" "bastion_eip" {
+  instance = aws_instance.bastion.id
+  vpc      = true
+  depends_on = [aws_instance.bastion]
+  tags = {
+    Name = "bastion-eip-v5"
   }
 }
 
 ############################
 # 10) Outputs
 ############################
-output "ec2_eks_access_role_arn" {
-  value = aws_iam_role.ec2_eks_access_role.arn
+output "bastion_eip" {
+  description = "Elastic IP of the bastion host"
+  value       = aws_eip.bastion_eip.public_ip
 }
 
-output "cluster_name" {
+output "eks_cluster_name" {
   value = module.eks_control_plane.cluster_name
 }
 
@@ -328,14 +345,6 @@ output "kubeconfig_certificate_authority_data" {
 
 output "cluster_endpoint" {
   value = data.aws_eks_cluster.cluster.endpoint
-}
-
-output "bastion_private_ip" {
-  value = aws_instance.bastion.private_ip
-}
-
-output "bastion_public_ip" {
-  value = aws_instance.bastion.public_ip
 }
 
 output "vpc_id" {
