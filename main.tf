@@ -43,7 +43,7 @@ module "vpc" {
 # 2) IAM Role & Policies for EC2 Bastion / Worker Nodes
 ############################
 resource "aws_iam_role" "ec2_eks_access_role" {
-  name = "ec2-eks-access-role-v2"
+  name = "ec2-eks-access-role-v3"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -76,7 +76,7 @@ resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
 }
 
 resource "aws_iam_policy" "eks_describe_cluster_policy" {
-  name        = "eks-describe-cluster-policy-v2"
+  name        = "eks-describe-cluster-policy-v3"
   description = "Allow EKS DescribeCluster action"
   policy      = jsonencode({
     Version = "2012-10-17",
@@ -89,13 +89,13 @@ resource "aws_iam_policy" "eks_describe_cluster_policy" {
 }
 
 resource "aws_iam_policy_attachment" "attach_describe_cluster_policy" {
-  name       = "attach-describe-cluster-policy-v2"
+  name       = "attach-describe-cluster-policy-v3"
   policy_arn = aws_iam_policy.eks_describe_cluster_policy.arn
   roles      = [aws_iam_role.ec2_eks_access_role.name]
 }
 
 resource "aws_iam_instance_profile" "ec2_instance_profile" {
-  name = "ec2-eks-access-instance-profile-v2"
+  name = "ec2-eks-access-instance-profile-v3"
   role = aws_iam_role.ec2_eks_access_role.name
 }
 
@@ -106,7 +106,7 @@ module "eks_control_plane" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.36.0"
 
-  cluster_name    = "secure-cluster-v2"
+  cluster_name    = "secure-cluster-v3"
   cluster_version = var.eks_version
 
   cluster_endpoint_private_access = true
@@ -120,7 +120,7 @@ module "eks_control_plane" {
   # Do NOT specify node groups here (we'll create them later)
   tags = {
     Environment = "production"
-    Name        = "secure-cluster-v2"
+    Name        = "secure-cluster-v3"
   }
 }
 
@@ -203,7 +203,7 @@ resource "aws_eks_node_group" "worker_nodes" {
 # 8) Security Group for Bastion
 ############################
 resource "aws_security_group" "bastion_sg" {
-  name        = "bastion-sg-v2"
+  name        = "bastion-sg-v3"
   description = "Allow SSH from my IP"
   vpc_id      = module.vpc.vpc_id
 
@@ -222,7 +222,7 @@ resource "aws_security_group" "bastion_sg" {
   }
 
   tags = {
-    Name = "bastion-sg-v2"
+    Name = "bastion-sg-v3"
   }
 }
 
@@ -260,7 +260,7 @@ resource "aws_instance" "bastion" {
     mkdir -p /home/ec2-user/.kube
     chown ec2-user:ec2-user /home/ec2-user/.kube
 
-    CLUSTER_NAME="secure-cluster-v2"
+    CLUSTER_NAME="secure-cluster-v3"
     REGION="${var.aws_region}"
     ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
                --query "cluster.endpoint" --output text)
@@ -299,7 +299,7 @@ CONFIG
   EOF
 
   tags = {
-    Name = "eks-bastion-v2"
+    Name = "eks-bastion-v3"
   }
 }
 
